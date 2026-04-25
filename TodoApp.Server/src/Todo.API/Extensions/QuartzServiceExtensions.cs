@@ -5,15 +5,52 @@ namespace Todo.API.Extensions
 {
     public static class QuartzServiceExtensions
     {
-        public static IServiceCollection AddQuartzConfiguration(this IServiceCollection services)
+        public static IServiceCollection AddQuartzConfiguration(this IServiceCollection services, IConfiguration configuration)
         {
+            var quartzSection = configuration.GetSection("Quartz");
+            var connectionString = configuration.GetConnectionString("DefaultConnection")
+                ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is required for Quartz persistent store.");
+
+            var schedulerName = quartzSection["quartz.scheduler.instanceName"] ?? "TodoScheduler";
+            var schedulerId = quartzSection["quartz.scheduler.instanceId"] ?? "AUTO";
+            var tablePrefix = quartzSection["quartz.jobStore.tablePrefix"] ?? "QRTZ_";
+            var threadCount = quartzSection.GetValue<int?>("quartz.threadPool.threadCount") ?? 3;
+            var clustered = quartzSection.GetValue<bool?>("quartz.jobStore.clustered") ?? true;
+            var clusterCheckinIntervalMs = quartzSection.GetValue<int?>("quartz.jobStore.clusterCheckinInterval") ?? 10000;
+            var misfireThresholdMs = quartzSection.GetValue<int?>("quartz.jobStore.misfireThreshold") ?? 60000;
+
             services.AddQuartz(q =>
             {
                 q.UseSimpleTypeLoader();
-                q.UseInMemoryStore();
+                q.SchedulerName = schedulerName;
+                q.SchedulerId = schedulerId;
+
+                q.UsePersistentStore(store =>
+                {
+                    store.UseProperties = true;
+                    store.PerformSchemaValidation = false;
+                    store.RetryInterval = TimeSpan.FromSeconds(15);
+                    store.UseNewtonsoftJsonSerializer();
+
+                    store.UseMySql(mysql =>
+                    {
+                        mysql.ConnectionString = connectionString;
+                        mysql.TablePrefix = tablePrefix;
+                    });
+
+                    if (clustered)
+                    {
+                        store.UseClustering(options =>
+                        {
+                            options.CheckinInterval = TimeSpan.FromMilliseconds(clusterCheckinIntervalMs);
+                            options.CheckinMisfireThreshold = TimeSpan.FromMilliseconds(misfireThresholdMs);
+                        });
+                    }
+                });
+
                 q.UseDefaultThreadPool(tp =>
                 {
-                    tp.MaxConcurrency = 3;
+                    tp.MaxConcurrency = threadCount;
                 });
 
                 var dailyReportJobKey = new JobKey("DailyTaskReportJob", "EmailJobs");
